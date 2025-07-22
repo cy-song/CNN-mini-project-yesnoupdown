@@ -1,0 +1,59 @@
+import tensorflow as tf
+import tensorflow_datasets as tfds
+import numpy as np
+import librosa
+import matplotlib.pyplot as plt
+
+# 指令
+COMMANDS = ['yes', 'no']
+
+# 取得所有 label 對應的 index
+label_names = tfds.builder('speech_commands').info.features['label'].names
+label_to_index = {name: idx for idx, name in enumerate(label_names)}
+wanted_labels = tf.constant([label_to_index[c] for c in COMMANDS], dtype=tf.int64)
+
+# 過濾只保留指定指令
+def filter_commands(audio, label):
+    return tf.reduce_any(tf.equal(label, wanted_labels))
+
+# 標籤0-3
+def relabel(audio, label):
+    new_label = tf.where(tf.equal(label, wanted_labels))[0][0]
+    return audio, new_label
+
+# MFCC
+def preprocess(audio, label):
+    audio = tf.cast(audio, tf.float32) / 32768.0
+    audio = tf.numpy_function(func=extract_mfcc, inp=[audio], Tout=tf.float32)
+    #audio.set_shape([None, 13, 1])  # 明確指定 shape  
+    audio.set_shape([40, 13, 1])  
+    return audio, label
+
+
+
+
+# 資料
+train_raw = tfds.load('speech_commands', split='train[:80%]', as_supervised=True)
+val_raw   = tfds.load('speech_commands', split='train[80%:]', as_supervised=True)
+
+train = train_raw.filter(filter_commands).map(relabel).map(preprocess).batch(32).prefetch(tf.data.AUTOTUNE)
+val   = val_raw.filter(filter_commands).map(relabel).map(preprocess).batch(32).prefetch(tf.data.AUTOTUNE)
+
+#模型
+
+model = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(40, 13, 1)),  # 固定 shape
+    tf.keras.layers.Conv2D(16, (3, 3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(),
+    tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+    tf.keras.layers.GlobalAveragePooling2D(),
+    tf.keras.layers.Dense(64, activation='relu'),
+    tf.keras.layers.Dense(4, activation='softmax')  # 4 類別
+])
+
+# 編譯與訓練
+model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+model.fit(ds_train, validation_data=ds_val, epochs=30)
+
+# 儲存模型
+model.save('speech.keras')
